@@ -6,7 +6,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 
-# Files with overlays already burned in — skip hook addition
 SKIP_HOOK = {
     "Amazon Seller Success_ 87 Cases Won!.mp4",
     "Son of Janitor to Bodybuilding Pro_ My Dream Story.mp4",
@@ -15,6 +14,30 @@ SKIP_HOOK = {
     "Never Eat Alone! Your Next Big Break Could Be There.mp4",
     "Future Proof Your Career_ The 10-Year Plan Secret.mp4",
 }
+
+def get_file_id_by_path(drive, file_path):
+    """Traverse exact Drive folder path to find correct file ID."""
+    path = file_path.replace('/content/drive/MyDrive/', '')
+    parts = path.split('/')
+    parent_id = 'root'
+    for part in parts[:-1]:
+        escaped = part.replace("'", "\\'")
+        results = drive.files().list(
+            q=f"name='{escaped}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            fields="files(id, name)"
+        ).execute()
+        folders = results.get('files', [])
+        if not folders:
+            print(f"  Folder not found: {part}")
+            return None
+        parent_id = folders[0]['id']
+    filename = parts[-1].replace("'", "\\'")
+    results = drive.files().list(
+        q=f"name='{filename}' and '{parent_id}' in parents and trashed=false",
+        fields="files(id, name)"
+    ).execute()
+    files = results.get('files', [])
+    return files[0]['id'] if files else None
 
 creds = Credentials.from_authorized_user_file("token.json", [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -39,41 +62,22 @@ for post in todays_posts:
     hook = post["copy"]["hook"]
     print(f"Processing: {title}")
 
-    filename = os.path.basename(post["path"])
-    
-    # Force 9:16 path to ensure correct format
-    correct_path = post["path"].replace("16:9 (YouTube)", "9:16 (Instagram, LinkedIn)")
-    correct_filename = os.path.basename(correct_path)
-    
-    # Search for file in the correct 9:16 folder path
-    folder_path = os.path.dirname(correct_path)
-    results = drive.files().list(
-        q=f"name='{correct_filename}' and '{folder_path}' in parents",
-        fields="files(id, name)"
-    ).execute()
-    files = results.get("files", [])
+    file_path = post["path"]
+    filename = os.path.basename(file_path)
 
-    # Fallback: search by filename only
-    if not files:
-        results = drive.files().list(
-            q=f"name='{correct_filename}'",
-            fields="files(id, name)"
-        ).execute()
-        files = results.get("files", [])
-
-    if not files:
-        print(f"  File not found in Drive: {correct_filename}")
+    file_id = get_file_id_by_path(drive, file_path)
+    if not file_id:
+        print(f"  File not found at path: {file_path}")
         continue
 
-    file_id = files[0]["id"]
     request = drive.files().get_media(fileId=file_id)
-    with open(correct_filename, "wb") as f:
+    with open(filename, "wb") as f:
         f.write(request.execute())
-    print(f"  Downloaded: {correct_filename}")
+    print(f"  Downloaded: {filename}")
 
-    if correct_filename in SKIP_HOOK:
+    if filename in SKIP_HOOK:
         print(f"  Skipping hook overlay (pre-rendered overlay exists)")
-        upload_filename = correct_filename
+        upload_filename = filename
     else:
         hook_clean = hook.replace("'", "\\'")
         if '.' in hook_clean[:-1]:
@@ -86,9 +90,9 @@ for post in todays_posts:
             line1 = ' '.join(words[:mid])
             line2 = ' '.join(words[mid:])
 
-        hooked_filename = f"hooked_{correct_filename}"
+        hooked_filename = f"hooked_{filename}"
         ffmpeg_cmd = [
-            'ffmpeg', '-y', '-i', correct_filename,
+            'ffmpeg', '-y', '-i', filename,
             '-vf',
             f"drawbox=x=20:y=20:w=680:h=160:color=white@0.95:t=fill,"
             f"drawtext=text='{line1}':fontfile=/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf:fontsize=44:fontcolor=black:x=40:y=38,"
@@ -105,7 +109,7 @@ for post in todays_posts:
 
     body = {
         "snippet": {
-            "title": title,
+            "title": title + " #Shorts",
             "description": post["copy"]["youtube_description"],
             "tags": post["copy"]["hashtags"].replace("#", "").split(),
             "categoryId": "17"
@@ -121,8 +125,8 @@ for post in todays_posts:
     ).execute()
 
     print(f"  Uploaded: https://youtube.com/watch?v={response['id']}")
-    os.remove(correct_filename)
-    if upload_filename != correct_filename and os.path.exists(upload_filename):
+    os.remove(filename)
+    if upload_filename != filename and os.path.exists(upload_filename):
         os.remove(upload_filename)
 
 print("Done.")
